@@ -72,6 +72,18 @@ function result(agent: string, output: string) {
 	};
 }
 
+test("chain result headers use themed monochrome success and failure indicators", () => {
+	for (const [exitCode, glyph, tone] of [[0, "●", "success"], [1, "!", "error"]] as const) {
+		const payload = { content: [{ type: "text", text: "done" }], details: { mode: "chain", results: [{ ...result("worker", "done"), exitCode }] } };
+		for (const expanded of [false, true]) {
+			const text = componentText(renderSubagentResult(payload as never, { expanded }, toneTheme as never));
+			assert.ok(text.includes(`⟦${tone}⟧${glyph}⟦/⟧`), text);
+		}
+		const summary = componentText(renderSubagentSummary(payload as never, {}, toneTheme as never));
+		assert.ok(summary.includes(`⟦${tone}⟧${glyph}⟦/⟧`), summary);
+	}
+});
+
 test("row clips content to the available width", () => {
 	const rendered = row("abcdef", 6, theme as any);
 	assert.equal(visibleWidth(rendered), 6);

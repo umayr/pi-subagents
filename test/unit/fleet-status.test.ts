@@ -599,7 +599,7 @@ describe("below-editor subagent FleetView", () => {
 			const component = widgetFactory!({ requestRender() {}, focusedComponent: Object.create(Editor.prototype) as Editor }, theme);
 			const compact = component.render(100)[0]!;
 			assert.match(compact, /1 active agent/);
-			assert.match(compact, /1 pane \(1 ⚠\)/);
+			assert.match(compact, /1 pane \(1 ▲\)/);
 			assert.deepEqual(fleet.handleKey("\x1b[B"), { consume: true });
 			const expanded = component.render(100).join("\n");
 			assert.match(expanded, /project panes/);

@@ -17,12 +17,12 @@ import {
 } from "../../src/shared/types.ts";
 
 class FakeIntervals {
-	private callbacks = new Map<object, () => void>();
+	private callbacks = new Map<object, { callback: () => void; delay: number }>();
 
 	readonly timers = {
-		setInterval: ((callback: () => void) => {
+		setInterval: ((callback: () => void, delay: number) => {
 			const handle = { unref() {} };
-			this.callbacks.set(handle, callback);
+			this.callbacks.set(handle, { callback, delay });
 			return handle;
 		}) as unknown as typeof setInterval,
 		clearInterval: ((handle: object) => {
@@ -31,11 +31,19 @@ class FakeIntervals {
 	};
 
 	fireAll(): void {
-		for (const callback of [...this.callbacks.values()]) callback();
+		for (const entry of [...this.callbacks.values()]) if (entry.delay !== 500) entry.callback();
+	}
+
+	fireSpinner(): void {
+		for (const entry of [...this.callbacks.values()]) if (entry.delay === 500) entry.callback();
 	}
 
 	pendingCount(): number {
-		return this.callbacks.size;
+		return [...this.callbacks.values()].filter((entry) => entry.delay !== 500).length;
+	}
+
+	spinnerCount(): number {
+		return [...this.callbacks.values()].filter((entry) => entry.delay === 500).length;
 	}
 }
 
@@ -77,6 +85,24 @@ function stateForTest(): SubagentState {
 }
 
 describe("Herdr status bridge", () => {
+	it("animates only while active and clears its timer on completion", async () => {
+		const events = new FakeEvents();
+		const intervals = new FakeIntervals();
+		const commands: string[][] = [];
+		const bridge = registerHerdrStatusBridge({ events, env: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" }, timers: intervals.timers, runHerdr: (args) => commands.push([...args]) });
+		bridge.sessionStarted({ hasUI: true, runs: [{ id: "a", agent: "worker" }] });
+		await bridge.flush();
+		assert.equal(intervals.spinnerCount(), 1);
+		assert.ok(commands.at(-1)?.includes("title-suffix=⠋1"));
+		intervals.fireSpinner();
+		await bridge.flush();
+		assert.ok(commands.at(-1)?.includes("title-suffix=⠙1"));
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "a" });
+		await bridge.flush();
+		assert.equal(intervals.spinnerCount(), 0);
+		assert.ok(commands.at(-1)?.includes("--clear-token"));
+		bridge.dispose();
+	});
 	it("projects foreground workflow children onto the parent run without a shell duplicate", () => {
 		const state = stateForTest();
 		state.asyncJobs.set("workflow-1", {
@@ -155,7 +181,7 @@ describe("Herdr status bridge", () => {
 		});
 		bridge.sessionStarted({ hasUI: true, runs: projectActiveHerdrRuns(state) });
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 0 subagents"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 0 subagents"));
 
 		state.foregroundControls.set("child-1", {
 			runId: "child-1", parentWorkflowRunId: "workflow-1", mode: "single",
@@ -165,12 +191,12 @@ describe("Herdr status bridge", () => {
 		beginForegroundChild(control, { index: 0, agent: "reviewer", authoredTask: "review", effectivePrompt: "review", interrupt: () => true });
 		events.emit(HERDR_FOREGROUND_CONTROL_CHANGED_EVENT, { runId: "workflow-1" });
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (reviewer)"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (reviewer)"));
 
 		finishForegroundChild(control, 0);
 		events.emit(HERDR_FOREGROUND_CONTROL_CHANGED_EVENT, { runId: "workflow-1" });
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 0 subagents"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 0 subagents"));
 		bridge.dispose();
 	});
 
@@ -191,17 +217,17 @@ describe("Herdr status bridge", () => {
 		authoritativeRuns = [coordinator, child];
 		bridge.syncRuns();
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (reviewer)"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (reviewer)"));
 		events.emit(SUBAGENT_CONTROL_EVENT, {
 			source: "async", noticeText: "reviewer needs attention",
 			event: { type: "needs_attention", runId: "child-1" },
 		});
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (reviewer) ⚠"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (reviewer) ▲"));
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "child-1" });
 		authoritativeRuns = [coordinator];
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 0 subagents"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 0 subagents"));
 		bridge.dispose();
 	});
 
@@ -221,7 +247,7 @@ describe("Herdr status bridge", () => {
 		await bridge.flush();
 
 		assert.equal(commands.length, 1);
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (worker)"));
 
 		bridge.dispose();
 	});
@@ -243,15 +269,15 @@ describe("Herdr status bridge", () => {
 		await bridge.flush();
 
 		// The coordinator is active (busy stays raised) but contributes zero leaves.
-		assert.deepEqual(busyEvents, [{ active: true, label: "⏳ 0 subagents" }]);
-		assert.ok(commands[0]?.includes("summary=⏳ 0 subagents"));
+		assert.deepEqual(busyEvents, [{ active: true, label: "⠋ 0 subagents" }]);
+		assert.ok(commands[0]?.includes("summary=⠋ 0 subagents"));
 		assert.ok(!commands[0]?.join(" ").includes("workflow"));
 
 		events.emit(SUBAGENT_ASYNC_STARTED_EVENT, { id: "child-1", agent: "reviewer" });
 		await bridge.flush();
 
-		assert.deepEqual(busyEvents.at(-1), { active: true, label: "⏳ 1 subagent (reviewer)" });
-		assert.ok(commands[1]?.includes("summary=⏳ 1 subagent (reviewer)"));
+		assert.deepEqual(busyEvents.at(-1), { active: true, label: "⠋ 1 subagent (reviewer)" });
+		assert.ok(commands[1]?.includes("summary=⠋ 1 subagent (reviewer)"));
 
 		bridge.dispose();
 	});
@@ -282,7 +308,7 @@ describe("Herdr status bridge", () => {
 
 		assert.deepEqual(busyEvents, [{
 			active: true,
-			label: "⏳ 1 subagent (worker)",
+			label: "⠋ 1 subagent (worker)",
 		}]);
 		assert.equal(commands.length, 1);
 		assert.deepEqual(commands[0]?.slice(0, 8), [
@@ -297,10 +323,10 @@ describe("Herdr status bridge", () => {
 		]);
 		assert.ok(commands[0]?.includes("herdr:pi"));
 		assert.ok(commands[0]?.includes("--state-label"));
-		assert.ok(commands[0]?.includes("working=⏳ 1 subagent (worker)"));
-		assert.ok(commands[0]?.includes("idle=⏳ 1 subagent (worker)"));
-		assert.ok(commands[0]?.includes("done=⏳ 1 subagent (worker)"));
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("working=⠋ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("idle=⠋ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("done=⠋ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (worker)"));
 		assert.ok(commands[0]?.includes("--ttl-ms"));
 		assert.ok(commands[0]?.includes("--seq"));
 
@@ -330,16 +356,16 @@ describe("Herdr status bridge", () => {
 		await bridge.flush();
 
 		assert.deepEqual(busyEvents, [
-			{ active: true, label: "⏳ 1 subagent (worker)" },
+			{ active: true, label: "⠋ 1 subagent (worker)" },
 			{ active: false },
-			{ active: true, label: "⏳ 2 subagents (worker, reviewer)" },
+			{ active: true, label: "⠋ 2 subagents (worker, reviewer)" },
 			{ active: false },
-			{ active: true, label: "⏳ 1 subagent (reviewer)" },
+			{ active: true, label: "⠋ 1 subagent (reviewer)" },
 			{ active: false },
 		]);
 		assert.equal(commands.length, 4);
-		assert.ok(commands[1]?.includes("summary=⏳ 2 subagents (worker, reviewer)"));
-		assert.ok(commands[2]?.includes("summary=⏳ 1 subagent (reviewer)"));
+		assert.ok(commands[1]?.includes("summary=⠋ 2 subagents (worker, reviewer)"));
+		assert.ok(commands[2]?.includes("summary=⠋ 1 subagent (reviewer)"));
 		assert.ok(commands[3]?.includes("--clear-state-labels"));
 		assert.ok(commands[3]?.includes("--clear-token"));
 
@@ -359,7 +385,7 @@ describe("Herdr status bridge", () => {
 		});
 		bridge.sessionStarted({ hasUI: true, runs: [{ id: "run-restored", agent: "reviewer", needsAttention: true }] });
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (reviewer) ⚠"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (reviewer) ▲"));
 
 		bridge.agentStarted();
 		events.emit(SUBAGENT_ASYNC_STARTED_EVENT, { id: "run-1", agent: "worker" });
@@ -369,7 +395,7 @@ describe("Herdr status bridge", () => {
 			event: { type: "needs_attention", runId: "run-1", reason: "supervisor_request" },
 		});
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 2 subagents (reviewer, worker) ⚠"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 2 subagents (reviewer, worker) ▲"));
 		assert.deepEqual(blockedEvents, []);
 
 		bridge.dispose();
@@ -396,16 +422,16 @@ describe("Herdr status bridge", () => {
 			event: { type: "needs_attention", runId: "run-1" },
 		});
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (worker)"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (worker)"));
 		events.emit(SUBAGENT_CONTROL_EVENT, {
 			source: "async",
 			event: { type: "needs_attention", runId: "run-1" },
 		});
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (worker) ⚠"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (worker) ▲"));
 		bridge.agentStarted();
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (worker)"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (worker)"));
 
 		bridge.dispose();
 	});
@@ -433,7 +459,7 @@ describe("Herdr status bridge", () => {
 
 		intervals.fireAll();
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (worker)"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (worker)"));
 
 		// A new explicit control event is a new attention transition even if
 		// the tracker flag never dropped.
@@ -442,7 +468,7 @@ describe("Herdr status bridge", () => {
 			event: { type: "needs_attention", runId: "run-1" },
 		});
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (worker) ⚠"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (worker) ▲"));
 
 		bridge.dispose();
 	});
@@ -465,10 +491,10 @@ describe("Herdr status bridge", () => {
 		events.emit(SUBAGENT_CONTROL_EVENT, { source: "async", event: { type: "needs_attention", runId: "run-2" } });
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "run-2" });
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 2 subagents (worker, scout) ⚠"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 2 subagents (worker, scout) ▲"));
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "run-1" });
 		await bridge.flush();
-		assert.ok(commands.at(-1)?.includes("summary=⏳ 1 subagent (scout)"));
+		assert.ok(commands.at(-1)?.includes("summary=⠋ 1 subagent (scout)"));
 
 		bridge.dispose();
 	});
@@ -497,10 +523,10 @@ describe("Herdr status bridge", () => {
 
 		assert.deepEqual(busyEvents, [{
 			active: true,
-			label: "⏳ 2 subagents (worker, reviewer)",
+			label: "⠋ 2 subagents (worker, reviewer)",
 		}]);
-		assert.ok(commands[0]?.includes("summary=⏳ 2 subagents (worker, reviewer) ⚠"));
-		assert.ok(commands[0]?.includes("title-suffix=⏳2⚠"));
+		assert.ok(commands[0]?.includes("summary=⠋ 2 subagents (worker, reviewer) ▲"));
+		assert.ok(commands[0]?.includes("title-suffix=⠋2▲"));
 
 		bridge.dispose();
 		await bridge.flush();
@@ -537,11 +563,11 @@ describe("Herdr status bridge", () => {
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "run-2" });
 		await bridge.flush();
 
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (worker) · 1 pane"));
-		assert.ok(commands[0]?.includes("title-suffix=⏳1"));
-		assert.ok(commands[1]?.includes("summary=⏳ 2 subagents (worker, reviewer) · 1 pane"));
-		assert.ok(commands[1]?.includes("title-suffix=⏳2"));
-		assert.ok(commands[2]?.includes("title-suffix=⏳2⚠"));
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (worker) · 1 pane"));
+		assert.ok(commands[0]?.includes("title-suffix=⠋1"));
+		assert.ok(commands[1]?.includes("summary=⠋ 2 subagents (worker, reviewer) · 1 pane"));
+		assert.ok(commands[1]?.includes("title-suffix=⠋2"));
+		assert.ok(commands[2]?.includes("title-suffix=⠋2▲"));
 		assert.ok(commands.at(-1)?.includes("--clear-token"));
 		assert.ok(commands.at(-1)?.includes("title-suffix"));
 
@@ -583,11 +609,11 @@ describe("Herdr status bridge", () => {
 		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "run-1" });
 		await bridge.flush();
 
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (worker) · Build auth flow"));
-		assert.ok(commands[0]?.includes("title-suffix=⏳1"));
-		assert.ok(commands[1]?.some((argument) => argument.startsWith("summary=⏳ 2 subagents") && argument.length < 180));
-		assert.ok(commands[1]?.some((argument) => argument === "title-suffix=⏳2"));
-		assert.ok(commands[2]?.includes("title-suffix=⏳1"));
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (worker) · Build auth flow"));
+		assert.ok(commands[0]?.includes("title-suffix=⠋1"));
+		assert.ok(commands[1]?.some((argument) => argument.startsWith("summary=⠋ 2 subagents") && argument.length < 180));
+		assert.ok(commands[1]?.some((argument) => argument === "title-suffix=⠋2"));
+		assert.ok(commands[2]?.includes("title-suffix=⠋1"));
 		assert.ok(commands[3]?.includes("--clear-state-labels"));
 		assert.doesNotMatch(commands.flat().join("\n"), /raw secret prompt|another raw prompt/);
 
@@ -607,8 +633,8 @@ describe("Herdr status bridge", () => {
 		bridge.sessionStarted({ hasUI: true, runs: [{ id: "run-1", agent: "worker", taskLabel: "\u001b[31m" }] });
 		await bridge.flush();
 
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (worker)"));
-		assert.ok(commands[0]?.includes("title-suffix=⏳1"));
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("title-suffix=⠋1"));
 		assert.doesNotMatch(commands.flat().join("\n"), /\u001b\[31m/);
 
 		bridge.dispose();
@@ -634,9 +660,9 @@ describe("Herdr status bridge", () => {
 		intervals.fireAll();
 		await bridge.flush();
 
-		assert.ok(commands[0]?.includes("title-suffix=⏳1"));
-		assert.ok(commands[1]?.includes("summary=⏳ 1 subagent (worker)"));
-		assert.ok(commands[1]?.includes("title-suffix=⏳1"));
+		assert.ok(commands[0]?.includes("title-suffix=⠋1"));
+		assert.ok(commands[1]?.includes("summary=⠋ 1 subagent (worker)"));
+		assert.ok(commands[1]?.includes("title-suffix=⠋1"));
 		assert.doesNotMatch(commands[1]?.join("\n") ?? "", /Build auth/);
 
 		bridge.dispose();
@@ -697,7 +723,7 @@ describe("Herdr status bridge", () => {
 		await bridge.flush();
 
 		assert.deepEqual(busyEvents, [
-			{ active: true, label: "⏳ 1 subagent (worker)" },
+			{ active: true, label: "⠋ 1 subagent (worker)" },
 			{ active: false },
 		]);
 		assert.equal(intervals.pendingCount(), 0);
@@ -737,7 +763,7 @@ describe("Herdr status bridge", () => {
 		await bridge.flush();
 
 		assert.equal(commands.length, 2);
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (worker)"));
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (worker)"));
 		assert.ok(commands[1]?.includes("--clear-state-labels"));
 
 		bridge.dispose();
@@ -780,8 +806,8 @@ describe("Herdr status bridge", () => {
 		events.emit(SUBAGENT_ASYNC_STARTED_EVENT, { id: "run-2", agent: "reviewer" });
 		await bridge.flush();
 		assert.equal(commands.length, 1);
-		assert.ok(commands[0]?.includes("summary=⏳ 1 subagent (reviewer)"));
-		assert.deepEqual(busyEvents, [{ active: true, label: "⏳ 1 subagent (reviewer)" }]);
+		assert.ok(commands[0]?.includes("summary=⠋ 1 subagent (reviewer)"));
+		assert.deepEqual(busyEvents, [{ active: true, label: "⠋ 1 subagent (reviewer)" }]);
 
 		bridge.dispose();
 	});

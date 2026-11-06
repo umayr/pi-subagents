@@ -9,6 +9,8 @@ export const HERDR_FOREGROUND_CONTROL_CHANGED_EVENT = "pi-subagents:herdr:foregr
 const DEFAULT_SOURCE = "pi-subagents:herdr";
 const DEFAULT_TTL_MS = 120_000;
 const DEFAULT_REFRESH_MS = 45_000;
+const SPINNER_INTERVAL_MS = 500;
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_TASK_LABEL_CHARS = 80;
 const MAX_WORKFLOW_LABEL_NODES = 128;
 const MAX_WORKFLOW_LABEL_DEPTH = 8;
@@ -137,7 +139,7 @@ export function registerHerdrStatusBridge(options: HerdrStatusBridgeOptions): He
 	const refreshMs = options.refreshMs ?? DEFAULT_REFRESH_MS;
 	const timers = options.timers ?? { setInterval, clearInterval };
 	const runs = new Map<string, HerdrStatusRun>();
-	// Child attention is addressed to the parent agent, so it only adds ⚠ to the
+	// Child attention is addressed to the parent agent, so it only adds ▲ to the
 	// metadata label and never raises Herdr's human-blocked state.
 	const attentionRuns = new Set<string>();
 	const acknowledgedAttention = new Set<string>();
@@ -151,6 +153,8 @@ export function registerHerdrStatusBridge(options: HerdrStatusBridgeOptions): He
 	let draining = false;
 	let drainPromise = Promise.resolve();
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
+	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+	let spinnerFrame = 0;
 
 	const activeAgentNames = (): string[] => [...new Set([...runs.values()].flatMap((run) => run.agents?.length ? run.agents : run.agent ? [run.agent] : []))];
 	// Preserve the minimum count for ordinary runs with incomplete status;
@@ -169,13 +173,13 @@ export function registerHerdrStatusBridge(options: HerdrStatusBridgeOptions): He
 		const paneText = panes > 0 ? ` · ${panes} pane${panes === 1 ? "" : "s"}` : "";
 		const task = activeTaskLabel();
 		const taskText = task ? ` · ${task}` : "";
-		const attention = includeAttention && attentionRuns.size > 0 ? " ⚠" : "";
-		return `⏳ ${activeCount} subagent${activeCount === 1 ? "" : "s"}${who}${paneText}${taskText}${attention}`;
+		const attention = includeAttention && attentionRuns.size > 0 ? " ▲" : "";
+		return `${SPINNER_FRAMES[spinnerFrame]} ${activeCount} subagent${activeCount === 1 ? "" : "s"}${who}${paneText}${taskText}${attention}`;
 	};
 
 	const titleSuffix = (): string | undefined => {
 		if (runs.size === 0) return undefined;
-		return `⏳${activeSubagentCount()}${attentionRuns.size > 0 ? "⚠" : ""}`;
+		return `${SPINNER_FRAMES[spinnerFrame]}${activeSubagentCount()}${attentionRuns.size > 0 ? "▲" : ""}`;
 	};
 
 	const enqueue = (args: readonly string[]): void => {
@@ -235,6 +239,17 @@ export function registerHerdrStatusBridge(options: HerdrStatusBridgeOptions): He
 	};
 
 	const syncRefreshTimer = (): void => {
+		if (enabled && rootSession && runs.size > 0 && !spinnerTimer) {
+			spinnerFrame = 0;
+			spinnerTimer = timers.setInterval(() => {
+				spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+				publish();
+			}, SPINNER_INTERVAL_MS);
+			spinnerTimer.unref?.();
+		} else if ((runs.size === 0 || !rootSession) && spinnerTimer) {
+			timers.clearInterval(spinnerTimer);
+			spinnerTimer = undefined;
+		}
 		if (runs.size > 0 && refreshMs > 0 && !refreshTimer) {
 			refreshTimer = timers.setInterval(() => refresh(), refreshMs);
 			refreshTimer.unref?.();

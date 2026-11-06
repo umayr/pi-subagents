@@ -848,7 +848,7 @@ describe("subagent extension child mode", () => {
 			const fleetWidgets = widgets.filter((entry) => entry.key === "subagent-fleet-status");
 			if (!fleetWidgets.some((entry) => typeof entry.value === "function")) throw new Error("management result did not restore active fleet status: " + JSON.stringify(fleetWidgets));
 			// The coordinator stays visible while contributing no subagent leaf.
-			if (!herdrCommands.some(({ args }) => args.includes("summary=⏳ 0 subagents"))) throw new Error("management result did not restore Herdr status: " + JSON.stringify(herdrCommands));
+			if (!herdrCommands.some(({ args }) => args.includes("summary=⠋ 0 subagents"))) throw new Error("management result did not restore Herdr status: " + JSON.stringify(herdrCommands));
 			const herdrCommandCount = herdrCommands.length;
 			for (const handler of handlers.get("tool_result")) await handler({ toolName: "subagent" }, ctx);
 			if (herdrCommands.length !== herdrCommandCount) throw new Error("unchanged active jobs redundantly refreshed Herdr status: " + JSON.stringify(herdrCommands));

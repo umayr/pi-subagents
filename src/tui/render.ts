@@ -931,6 +931,13 @@ function semanticResultPresentation(input: {
 	return { glyph: "✓", label: "completed", tone: input.completedWithoutOutput ? "warning" : "success" };
 }
 
+function chainResultPresentation(mode: Details["mode"], presentation: ResultPresentation): ResultPresentation {
+	if (mode !== "chain") return presentation;
+	if (presentation.label === "completed") return { ...presentation, glyph: "●", tone: "success" };
+	if (presentation.label === "failed") return { ...presentation, glyph: "!", tone: "error" };
+	return presentation;
+}
+
 function hasTerminalResultFlag(result: Details["results"][number]): boolean {
 	return Boolean(result.detached || result.stopped || result.interrupted);
 }
@@ -3408,7 +3415,8 @@ function renderMultiCompact(d: Details, theme: Theme, layout: MainWindowRenderLa
 		seed: runningSeed(progressRunningSeed(totalSummary), d.currentStepIndex),
 		frame,
 	});
-	const glyph = presentationTone(aggregatePresentation, theme)(aggregatePresentation.glyph);
+	const chainPresentation = chainResultPresentation(d.mode, aggregatePresentation);
+	const glyph = presentationTone(chainPresentation, theme)(chainPresentation.glyph);
 	const contextBadge = contextModeBadge(theme, d.context);
 	const c = new Container();
 	const width = getTermWidth() - 4;
@@ -3518,9 +3526,9 @@ export function renderSubagentSummary(
 	const glyph = state === "running"
 		? runningTone(theme, details?.mode === "single" && results.length === 1 ? childThinkingLevel(results[0], results[0]?.progress) : undefined)(STATIC_RUNNING_GLYPH)
 		: state === "completed"
-			? theme.fg("success", "✓")
+			? theme.fg("success", details?.mode === "chain" ? "●" : "✓")
 			: state === "failed"
-				? theme.fg("error", "✗")
+				? theme.fg("error", details?.mode === "chain" ? "!" : "✗")
 				: theme.fg("warning", "■");
 	const label = details?.mode === "single" && results.length === 1
 		? foregroundSingleDisplayName(results[0])
@@ -3551,7 +3559,10 @@ export function renderSubagentResult(
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = contextModePrefix(theme, d?.context);
 		const width = getTermWidth() - 4;
-		if (!text.includes("\n")) return compact(new Text(truncLine(`${contextPrefix}${text}`, width), 0, 0));
+		const colorChainIndicator = (line: string): string => line.startsWith("● Chain completed")
+			? theme.fg("success", "●") + line.slice(1)
+			: line.startsWith("! Chain failed") ? theme.fg("error", "!") + line.slice(1) : line;
+		if (!text.includes("\n")) return compact(new Text(truncLine(`${contextPrefix}${colorChainIndicator(text)}`, width), 0, 0));
 		if (d && !options.expanded && !result.isError) {
 			const lines = text.split(/\r?\n/);
 			const firstNonEmptyLine = lines.find((line) => line.trim())?.trim() || "(no output)";
@@ -3566,7 +3577,7 @@ export function renderSubagentResult(
 		}
 		const c = new Container();
 		const wrapped = wrapPlainText(`${contextPrefix}${text}`, width);
-		for (const line of wrapped) c.addChild(new Text(line, 0, 0));
+		for (const line of wrapped) c.addChild(new Text(colorChainIndicator(line), 0, 0));
 		return c;
 	}
 
@@ -3688,7 +3699,7 @@ export function renderSubagentResult(
 		&& !isResultRunning(r)
 		&& hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
-	const presentation = styledResultPresentation(semanticResultPresentation({
+	const presentation = styledResultPresentation(chainResultPresentation(d.mode, semanticResultPresentation({
 		running: hasRunning,
 		detached,
 		stopped,
@@ -3697,7 +3708,7 @@ export function renderSubagentResult(
 		partial,
 		completedWithoutOutput,
 		frame,
-	}), theme);
+	})), theme);
 
 	const totalSummary =
 		d.progressSummary ||

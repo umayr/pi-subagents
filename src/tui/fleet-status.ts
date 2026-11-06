@@ -350,7 +350,7 @@ function activeLeafAgentCount(entries: FleetStatusEntry[]): number {
 
 function projectPaneNeedsAttention(pane: HerdrProjectPaneSnapshot): boolean {
 	return ["attention", "blocked", "paused", "failed", "error"].some((status) => pane.agentStatus.includes(status))
-		|| pane.summary?.includes("⚠") === true;
+		|| pane.summary?.includes("⚠") === true || pane.summary?.includes("▲") === true;
 }
 
 function projectName(projectRoot: string): string {
@@ -808,7 +808,7 @@ export class SubagentFleetStatus {
 			const noun = workEntries.some((entry) => entry.external) ? "job" : "agent";
 			const agents = activeEntries > 0 ? `${activeEntries} active ${noun}${activeEntries === 1 ? "" : "s"}` : "";
 			const paneAttention = projectEntries.filter((entry) => entry.projectPane && projectPaneNeedsAttention(entry.projectPane)).length;
-			const panes = projectEntries.length > 0 ? `${projectEntries.length} pane${projectEntries.length === 1 ? "" : "s"}${paneAttention ? ` (${paneAttention} ⚠)` : ""}` : "";
+			const panes = projectEntries.length > 0 ? `${projectEntries.length} pane${projectEntries.length === 1 ? "" : "s"}${paneAttention ? ` (${paneAttention} ▲)` : ""}` : "";
 			const label = [agents, asyncRuns, panes].filter(Boolean).join(" · ");
 			const nativeUsage = formatFleetTokens(tokens, window, nativeEntries.length);
 			const usage = hasWorkflow
